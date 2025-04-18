@@ -22,8 +22,8 @@
 		"cli": "node cli/index.js",
 		"prepare": "npm run typecheck && npm run test:run",
 		"validate": "npm run lint && npm run typecheck && npm run test:run",
-		"scripts:setup": "bash scripts/setup-project.sh",
-		"scripts:docs": "bash scripts/update-docs.sh"
+		"setup": "node cli/index.js setup",
+		"extract-sample": "node cli/index.js extract-sample"
 	},
 	"bin": {
 		"redirector": "./cli/index.js"

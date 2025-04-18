@@ -18,7 +18,8 @@ program
   .version('1.0.0');
 
 // Configuration
-let apiUrl = process.env.REDIRECTOR_API_URL || 'https://redirector-dev.anugrah.workers.dev';
+let apiUrl = process.env.REDIRECTOR_API_URL || 'http://localhost:8787';
+let remoteApiUrl = process.env.REDIRECTOR_REMOTE_API_URL || 'https://redirector-dev.workers.dev';
 let kvNamespaceId = process.env.REDIRECTOR_KV_NAMESPACE_ID;
 let accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 
@@ -26,13 +27,19 @@ let accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 program
   .command('config')
   .description('Configure the CLI')
-  .option('-u, --url <url>', 'API URL (e.g., http://localhost:8787)')
+  .option('-u, --url <url>', 'Local API URL (e.g., http://localhost:8787)')
+  .option('-r, --remote-url <url>', 'Remote API URL (e.g., https://redirector.workers.dev)')
   .option('-n, --namespace <id>', 'KV Namespace ID')
   .option('-a, --account <id>', 'Cloudflare Account ID')
   .action((options) => {
     if (options.url) {
       apiUrl = options.url;
-      console.log(chalk.green(`API URL set to: ${apiUrl}`));
+      console.log(chalk.green(`Local API URL set to: ${apiUrl}`));
+    }
+    
+    if (options.remoteUrl) {
+      remoteApiUrl = options.remoteUrl;
+      console.log(chalk.green(`Remote API URL set to: ${remoteApiUrl}`));
     }
     
     if (options.namespace) {
@@ -47,7 +54,8 @@ program
     
     // Show current configuration
     console.log(chalk.blue('\nCurrent Configuration:'));
-    console.log(`API URL: ${apiUrl || chalk.yellow('Not set')}`);
+    console.log(`Local API URL: ${apiUrl || chalk.yellow('Not set')}`);
+    console.log(`Remote API URL: ${remoteApiUrl || chalk.yellow('Not set')}`);
     console.log(`KV Namespace ID: ${kvNamespaceId || chalk.yellow('Not set')}`);
     console.log(`Cloudflare Account ID: ${accountId || chalk.yellow('Not set')}`);
   });
@@ -65,6 +73,7 @@ program
   .option('-o, --overwrite', 'Overwrite existing redirects')
   .option('--to-worker', 'Upload to worker API (default)', true)
   .option('--to-kv', 'Upload directly to KV using wrangler', false)
+  .option('--remote', 'Use remote worker instead of local development server')
   .action(async (filePath, options) => {
     try {
       const format = options.format || inferFormatFromFilename(filePath);
@@ -81,10 +90,11 @@ program
       const content = fs.readFileSync(filePath, 'utf8');
       
       if (options.toWorker) {
-        // Upload to worker API
-        console.log(chalk.blue(`Uploading ${format} file to worker API...`));
+        // Choose API URL based on remote flag
+        const url = options.remote ? remoteApiUrl : apiUrl;
+        console.log(chalk.blue(`Uploading ${format} file to worker API (${options.remote ? 'remote' : 'local'})...`));
         
-        const response = await fetch(`${apiUrl}/api/files/upload`, {
+        const response = await fetch(`${url}/api/files/upload`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -196,15 +206,17 @@ program
   .option('-o, --output <file>', 'Output file path')
   .option('--from-worker', 'Download from worker API (default)', true)
   .option('--from-kv', 'Download directly from KV using wrangler', false)
+  .option('--remote', 'Use remote worker instead of local development server')
   .action(async (options) => {
     try {
       const format = options.format;
       
       if (options.fromWorker) {
-        // Download from worker API
-        console.log(chalk.blue(`Downloading redirects in ${format} format...`));
+        // Choose API URL based on remote flag
+        const url = options.remote ? remoteApiUrl : apiUrl;
+        console.log(chalk.blue(`Downloading redirects in ${format} format from ${options.remote ? 'remote' : 'local'} worker...`));
         
-        const response = await fetch(`${apiUrl}/api/files/download`, {
+        const response = await fetch(`${url}/api/files/download`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -284,11 +296,14 @@ program
 program
   .command('list')
   .description('List all redirects')
-  .action(async () => {
+  .option('--remote', 'Use remote worker instead of local development server')
+  .action(async (options) => {
     try {
-      console.log(chalk.blue('Fetching redirects...'));
+      // Choose API URL based on remote flag
+      const url = options.remote ? remoteApiUrl : apiUrl;
+      console.log(chalk.blue(`Fetching redirects from ${options.remote ? 'remote' : 'local'} worker...`));
       
-      const response = await fetch(`${apiUrl}/api/redirects`);
+      const response = await fetch(`${url}/api/redirects`);
       const result = await response.json();
       
       if (response.ok) {
@@ -326,9 +341,12 @@ program
   .option('-q, --preserve-query', 'Preserve query parameters', true)
   .option('-h, --preserve-hash', 'Preserve hash fragment', true)
   .option('--no-enabled', 'Disable this redirect')
+  .option('--remote', 'Use remote worker instead of local development server')
   .action(async (source, destination, options) => {
     try {
-      console.log(chalk.blue(`Adding redirect from ${source} to ${destination}...`));
+      // Choose API URL based on remote flag
+      const url = options.remote ? remoteApiUrl : apiUrl;
+      console.log(chalk.blue(`Adding redirect from ${source} to ${destination} on ${options.remote ? 'remote' : 'local'} worker...`));
       
       const redirect = {
         source,
@@ -339,7 +357,7 @@ program
         preserveHash: options.preserveHash !== false,
       };
       
-      const response = await fetch(`${apiUrl}/api/redirects`, {
+      const response = await fetch(`${url}/api/redirects`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -363,11 +381,14 @@ program
 program
   .command('delete <source>')
   .description('Delete a redirect')
-  .action(async (source) => {
+  .option('--remote', 'Use remote worker instead of local development server')
+  .action(async (source, options) => {
     try {
-      console.log(chalk.blue(`Deleting redirect for ${source}...`));
+      // Choose API URL based on remote flag
+      const url = options.remote ? remoteApiUrl : apiUrl;
+      console.log(chalk.blue(`Deleting redirect for ${source} from ${options.remote ? 'remote' : 'local'} worker...`));
       
-      const response = await fetch(`${apiUrl}/api/redirects/${encodeURIComponent(source)}`, {
+      const response = await fetch(`${url}/api/redirects/${encodeURIComponent(source)}`, {
         method: 'DELETE',
       });
       
@@ -378,6 +399,133 @@ program
       } else {
         console.error(chalk.red(`Error: ${result.message}`));
       }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+// Setup project command
+program
+  .command('setup')
+  .description('Set up the Redirector project (create KV namespaces, etc.)')
+  .action(async () => {
+    try {
+      console.log(chalk.blue('Setting up Redirector project...'));
+      
+      // Create KV namespaces
+      console.log(chalk.blue('Creating Cloudflare KV namespaces...'));
+      try {
+        execSync('wrangler kv namespace create REDIRECTS_KV', { stdio: 'inherit' });
+        execSync('wrangler kv namespace create REDIRECTS_KV --preview', { stdio: 'inherit' });
+      } catch (error) {
+        console.error(chalk.red('Error creating KV namespaces:'), error.message);
+        console.log(chalk.yellow('You may need to login first with: wrangler login'));
+        return;
+      }
+      
+      // Create a .env.local file for development
+      console.log(chalk.blue('Creating .env.local file...'));
+      fs.writeFileSync('.env.local', `# Redirector local environment variables
+REDIRECTOR_API_URL=http://localhost:8787
+# Add your KV namespace ID here if you need to access it directly
+# REDIRECTOR_KV_NAMESPACE_ID=your-kv-namespace-id
+`);
+      
+      console.log(chalk.green('Setup complete! Next steps:'));
+      console.log('1. Update wrangler.jsonc with your KV namespace IDs');
+      console.log('2. Start the development server: npm run dev');
+      console.log('3. Access the Admin UI: http://localhost:8787/admin');
+      console.log('4. Upload sample redirects: npm run cli upload samples/json/full_example.json');
+    } catch (error) {
+      console.error(chalk.red('Error:'), error.message);
+    }
+  });
+
+// Extract sample command
+program
+  .command('extract-sample <source-file>')
+  .description('Extract a sample of redirects from a file')
+  .option('-o, --output-dir <dir>', 'Output directory', './samples')
+  .option('-c, --count <number>', 'Number of redirects to extract', parseInt, 10)
+  .action(async (sourceFile, options) => {
+    try {
+      console.log(chalk.blue(`Extracting ${options.count} redirects from ${sourceFile}...`));
+      
+      // Read the source file
+      if (!fs.existsSync(sourceFile)) {
+        console.error(chalk.red(`Source file not found: ${sourceFile}`));
+        return;
+      }
+      
+      const content = fs.readFileSync(sourceFile, 'utf8');
+      const format = inferFormatFromFilename(sourceFile);
+      
+      if (!format) {
+        console.error(chalk.red('Could not determine file format'));
+        return;
+      }
+      
+      // Create output directories
+      const samplesDir = options.outputDir;
+      if (!fs.existsSync(samplesDir)) {
+        fs.mkdirSync(samplesDir, { recursive: true });
+      }
+      
+      ['json', 'csv', 'terraform'].forEach(fmt => {
+        const dir = path.join(samplesDir, fmt);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+      });
+      
+      // Parse the file using formatService
+      // For simplicity, we'll use the API to convert formats
+      const url = apiUrl;
+      
+      // First upload to get the redirects
+      const uploadResponse = await fetch(`${url}/api/files/upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          format,
+          content,
+          overwrite: true,
+        }),
+      });
+      
+      if (!uploadResponse.ok) {
+        console.error(chalk.red('Error uploading file for conversion'));
+        return;
+      }
+      
+      // Extract samples in each format
+      for (const outputFormat of ['json', 'csv', 'terraform']) {
+        const downloadResponse = await fetch(`${url}/api/files/download`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            format: outputFormat,
+          }),
+        });
+        
+        if (!downloadResponse.ok) {
+          console.error(chalk.red(`Error downloading in ${outputFormat} format`));
+          continue;
+        }
+        
+        const outputContent = await downloadResponse.text();
+        const extension = outputFormat === 'terraform' ? 'tf' : outputFormat;
+        const outputPath = path.join(samplesDir, outputFormat, `extracted_sample.${extension}`);
+        
+        fs.writeFileSync(outputPath, outputContent);
+        console.log(chalk.green(`Extracted sample saved to ${outputPath}`));
+      }
+      
+      console.log(chalk.green('Sample extraction complete!'));
     } catch (error) {
       console.error(chalk.red('Error:'), error.message);
     }

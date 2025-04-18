@@ -9,6 +9,9 @@ A command-line interface for managing redirects in the Redirector Worker.
 - Upload redirects from JSON, CSV, or Terraform files
 - Download redirects in various formats
 - Direct KV operations (optional)
+- Project setup automation
+- Sample file extraction from existing redirects
+- Support for both local and remote environments
 
 ## Tools Used
 
@@ -40,20 +43,38 @@ node cli/index.js <command>
 ### Common Commands
 
 ```bash
-# Configure the CLI
-npm run cli config --url https://your-worker.example.workers.dev
+# Set up the project (create KV namespaces)
+npm run cli setup
 
-# Add a redirect
+# Configure the CLI
+npm run cli config --url http://localhost:8787 --remote-url https://your-worker.workers.dev
+
+# Add a redirect (local worker)
 npm run cli add /old-path /new-path
+
+# Add a redirect (remote worker)
+npm run cli add /old-path /new-path --remote
 
 # List all redirects
 npm run cli list
 
+# List redirects from remote worker
+npm run cli list --remote
+
 # Upload redirects from a file
 npm run cli upload samples/json/full_example.json
 
+# Upload to remote worker
+npm run cli upload samples/json/full_example.json --remote
+
 # Download redirects
 npm run cli download --format json --output redirects.json
+
+# Download from remote worker
+npm run cli download --format json --output redirects.json --remote
+
+# Extract sample redirects from a file
+npm run cli extract-sample redirect_list.tf --output-dir ./samples --count 10
 ```
 
 See the full CLI documentation in [/docs/CLI.md](/docs/CLI.md).
@@ -85,18 +106,27 @@ After global installation, you can use the `redirector` command directly from an
 ## Example Workflow
 
 ```bash
-# Configure the CLI
-redirector config --url https://redirector-dev.example.workers.dev
+# Set up the project
+redirector setup
 
-# Add a basic redirect
+# Configure the CLI
+redirector config --url http://localhost:8787 --remote-url https://redirector-dev.example.workers.dev
+
+# Start development
+# (In a separate terminal) npm run dev
+
+# Add a basic redirect to local worker
 redirector add /docs https://docs.example.com
 
-# Upload a batch of redirects
-redirector upload samples/json/full_example.json
+# Test the functionality locally
+curl -I http://localhost:8787/docs
 
-# List all redirects
-redirector list
+# Upload a batch of redirects to remote worker
+redirector upload samples/json/full_example.json --remote
 
-# Test the functionality
-curl -I https://redirector-dev.example.workers.dev/docs
+# List all redirects in remote worker
+redirector list --remote
+
+# Extract sample redirects from a large file
+redirector extract-sample large-redirects.json --count 10 --output-dir ./demo
 ```

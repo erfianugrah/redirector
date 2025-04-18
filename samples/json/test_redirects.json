@@ -1,0 +1,52 @@
+{
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "https://www.google.com",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Redirect root to Google"
+    },
+    {
+      "source": "/github",
+      "destination": "https://github.com",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Redirect to GitHub"
+    },
+    {
+      "source": "/products/:productId",
+      "destination": "/catalog/products/:productId",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Dynamic product redirect with parameter"
+    },
+    {
+      "source": "/blog/:year/:month/:slug",
+      "destination": "https://blog.example.com/:year/:month/:slug",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Blog redirect with multiple parameters"
+    },
+    {
+      "source": "/legacy-api",
+      "destination": "/api/v2",
+      "statusCode": 301,
+      "enabled": true,
+      "conditions": {
+        "headers": {
+          "x-api-version": "1.0"
+        }
+      },
+      "description": "Conditional redirect based on header"
+    }
+  ]
+}

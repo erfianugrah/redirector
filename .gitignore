@@ -48,10 +48,5 @@ logs/
 # Build artifacts
 *.tgz
 
-# Sample and test data
-sample_redirects.*
-test_redirects.*
-dummy_data/
-
 # Keep this file
 !.wrangler/settings.json
