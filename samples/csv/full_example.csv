@@ -1,0 +1,8 @@
+source,destination,statusCode,enabled,preserveQueryParams,preserveHash,description,hostname
+/old-path,/new-path,301,true,true,true,"Basic path redirect (relative URLs)",
+/products/:productId,/catalog/products/:productId,302,true,true,true,"Path parameter redirect (relative URLs)",
+/blog/:year/:month/:slug,https://blog.example.com/:year/:month/:slug,301,true,true,true,"Cross-domain redirect with parameters (absolute URL)",
+https://app.example.com/*,https://example.com/app,302,true,true,true,"Subdomain to main domain redirect (absolute URLs)",app.example.com
+https://old-domain.com/*,https://new-domain.com/*,301,true,true,true,"Domain change redirect (absolute URLs)",old-domain.com
+/mobile,/mobile-app,302,true,true,true,"Conditional redirect based on user agent",
+/api/v1,/api/v2,301,true,true,true,"Conditional redirect based on query parameters",

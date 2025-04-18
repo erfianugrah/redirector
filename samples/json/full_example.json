@@ -1,0 +1,83 @@
+{
+  "redirects": [
+    {
+      "source": "/old-path",
+      "destination": "/new-path",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Basic path redirect (relative URLs)"
+    },
+    {
+      "source": "/products/:productId",
+      "destination": "/catalog/products/:productId",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Path parameter redirect (relative URLs)"
+    },
+    {
+      "source": "/blog/:year/:month/:slug",
+      "destination": "https://blog.example.com/:year/:month/:slug",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Cross-domain redirect with parameters (absolute URL)"
+    },
+    {
+      "source": "https://app.example.com/*",
+      "destination": "https://example.com/app",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "conditions": {
+        "hostname": "app.example.com"
+      },
+      "description": "Subdomain to main domain redirect (absolute URLs)"
+    },
+    {
+      "source": "https://old-domain.com/*",
+      "destination": "https://new-domain.com/*",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "conditions": {
+        "hostname": "old-domain.com"
+      },
+      "description": "Domain change redirect (absolute URLs)"
+    },
+    {
+      "source": "/mobile",
+      "destination": "/mobile-app",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "conditions": {
+        "headers": {
+          "User-Agent": "mobile"
+        }
+      },
+      "description": "Conditional redirect based on user agent"
+    },
+    {
+      "source": "/api/v1",
+      "destination": "/api/v2",
+      "statusCode": 301,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "conditions": {
+        "queryParams": {
+          "version": "1"
+        }
+      },
+      "description": "Conditional redirect based on query parameters"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "https://www.google.com",
+      "statusCode": 302,
+      "enabled": true,
+      "preserveQueryParams": true,
+      "preserveHash": true,
+      "description": "Redirect root path to Google"
+    }
+  ]
+}
