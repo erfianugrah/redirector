@@ -16,6 +16,12 @@ A Cloudflare Worker that handles URL redirects with an admin UI and CLI for mana
 - [File Formats](#file-formats)
 - [Examples and Tutorials](#examples-and-tutorials)
 - [Deployment Guide](#deployment-guide)
+  - [Basic Setup](#basic-setup)
+  - [Deployment Methods](#deployment-methods)
+    - [Standalone Worker](#1-standalone-worker-zone-wide)
+    - [Path-Specific Deployment](#2-path-specific-deployment)
+    - [Service Binding Architecture](#3-service-binding-architecture-microservices)
+    - [Hybrid/API Architecture](#4-hybridapi-architecture)
 - [Project Architecture](#project-architecture)
 - [Contributing](#contributing)
 - [Future Enhancements](#future-enhancements)
@@ -967,9 +973,9 @@ The current implementation does not include authentication. In a production envi
 
 ## Deployment Guide
 
-This section explains how to deploy the Redirector Worker to Cloudflare Workers and configure the required resources.
+This section explains the different deployment approaches for the Redirector Worker, with specific attention to architectural considerations and integration with other services.
 
-### Setup
+### Basic Setup
 
 1. Clone the repository:
    ```bash
@@ -1006,15 +1012,264 @@ This section explains how to deploy the Redirector Worker to Cloudflare Workers 
    }
    ```
 
-### Deployment
+### Deployment Methods
 
-To deploy to Cloudflare Workers:
+There are several ways to deploy Redirector depending on your architectural needs:
 
+#### 1. Standalone Worker (Zone-Wide)
+
+This is the simplest deployment method where Redirector is the primary Worker handling all requests for your domain.
+
+**Configuration (wrangler.jsonc):**
+```jsonc
+{
+  "name": "redirector",
+  "main": "src/index.ts",
+  "routes": [
+    "example.com/*"  // This will catch all requests to your domain
+  ],
+  // ...other configuration
+}
+```
+
+**Command:**
 ```bash
 npm run deploy
 ```
 
-This will deploy the worker to your Cloudflare account using the configurations in `wrangler.jsonc`.
+**Advantages:**
+- Simple setup
+- Handles all URL patterns
+- Full control over the request lifecycle
+
+**Limitations:**
+- Cannot have other Workers on the same routes/paths
+- All other functionality must be built into this Worker
+
+#### 2. Path-Specific Deployment
+
+Deploy Redirector to handle specific path patterns only.
+
+**Configuration (wrangler.jsonc):**
+```jsonc
+{
+  "name": "redirector",
+  "main": "src/index.ts",
+  "routes": [
+    "example.com/legacy/*",
+    "example.com/redirect/*"
+  ],
+  // ...other configuration
+}
+```
+
+**Command:**
+```bash
+npm run deploy
+```
+
+**Advantages:**
+- Can coexist with other Workers handling different paths
+- More targeted deployment
+
+**Limitations:**
+- Doesn't handle redirects for paths not explicitly configured
+- Requires careful route planning
+
+#### 3. Service Binding Architecture (Microservices)
+
+This advanced approach uses Cloudflare's Service Bindings to deploy Redirector as a service that can be called by a main "dispatcher" Worker. Service Bindings allow Workers to communicate directly without public URLs, with zero performance overhead and no additional cost.
+
+**Step 1: Deploy Redirector as a service**
+
+Configuration (redirector/wrangler.jsonc):
+```jsonc
+{
+  "name": "redirector-service",
+  "main": "src/index.ts",
+  // No routes specified - will be bound to other Workers
+  "compatibility_date": "2025-03-10",
+  "kv_namespaces": [
+    {
+      "binding": "REDIRECTS_KV",
+      "id": "your-kv-id-here"
+    }
+  ],
+  "vars": {
+    "LOG_LEVEL": "info",
+    "ENABLE_DEBUG": "false"
+  },
+  "placement": {
+    "mode": "smart"  // Enable Smart Placement for optimal performance
+  }
+}
+```
+
+Command:
+```bash
+cd redirector
+wrangler deploy
+```
+
+**Step 2: Create a dispatcher Worker that uses Service Bindings**
+
+Create a new dispatcher Worker with this configuration (dispatcher/wrangler.jsonc):
+```jsonc
+{
+  "name": "edge-dispatcher",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "routes": [
+    "example.com/*"
+  ],
+  "services": [
+    { "binding": "REDIRECTOR", "service": "redirector-service" }
+    // Other services can be bound here
+  ],
+  "placement": {
+    "mode": "smart"  // Enable Smart Placement for co-location with bound services
+  }
+}
+```
+
+There are two methods to communicate with the Redirector service:
+
+**Method 1: HTTP Interface (using fetch)**
+
+Dispatcher Worker code:
+```javascript
+export default {
+  async fetch(request, env, ctx) {
+    // First check for redirects
+    const redirectResponse = await env.REDIRECTOR.fetch(request.clone());
+    if (redirectResponse.status >= 300 && redirectResponse.status < 400) {
+      return redirectResponse;
+    }
+    
+    // No redirect found, continue with normal request handling
+    // ... other logic
+    
+    return fetch(request);
+  }
+};
+```
+
+**Method 2: RPC Interface (direct method calls, recommended for performance)**
+
+First, enable RPC by exposing methods in the Redirector's main module:
+```typescript
+// In redirector/src/index.ts
+export class Redirector {
+  constructor(private env: Env) {}
+  
+  // Expose a method to check redirects
+  async checkRedirect(url: string, headers: HeadersInit = {}) {
+    const request = new Request(url, { headers });
+    const redirectService = new RedirectService(this.env.REDIRECTS_KV);
+    const redirectResult = await redirectService.matchRedirect(new URL(url), request);
+    
+    if (redirectResult.matched) {
+      const response = redirectService.processRedirect(redirectResult, new URL(url));
+      return {
+        matched: true,
+        location: response.headers.get('Location'),
+        statusCode: response.status
+      };
+    }
+    
+    return { matched: false };
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  redirector: Redirector
+};
+```
+
+Then use direct RPC calls in the dispatcher:
+```javascript
+export default {
+  async fetch(request, env, ctx) {
+    // Create an instance of the Redirector class
+    const redirector = new env.REDIRECTOR.redirector(env);
+    
+    // Check for redirects using RPC (more efficient than HTTP)
+    const redirectResult = await redirector.checkRedirect(request.url, request.headers);
+    
+    if (redirectResult.matched) {
+      return Response.redirect(redirectResult.location, redirectResult.statusCode);
+    }
+    
+    // No redirect found, continue with normal request handling
+    // ... other logic
+    
+    return fetch(request);
+  }
+};
+```
+
+Command:
+```bash
+cd dispatcher
+wrangler deploy
+```
+
+**Advantages:**
+- Zero overhead or added latency compared to HTTP requests between Workers
+- Modular architecture - separate services for different concerns
+- Can have multiple Workers on the same zone without route conflicts
+- Independent deployment and scaling for each service
+- Promotes microservices patterns with clean interfaces
+- Smart Placement optimizes Worker locations for better performance
+- Isolates services from public internet for improved security
+
+**Limitations:**
+- More complex setup requiring multiple Worker configurations
+- Requires managing multiple Workers and their dependencies
+- Both Workers must be in the same Cloudflare account
+- RPC interface requires careful design of service methods
+- Needs additional code for the dispatcher Worker
+- Testing locally requires running multiple Worker instances
+
+#### 4. Hybrid/API Architecture
+
+Deploy Redirector with dual functionality: standalone redirects and an API endpoint that other Workers can call.
+
+**Example configuration:**
+```javascript
+// In Redirector's main handler
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
+  
+  // API endpoint for other Workers to check redirects
+  if (url.pathname === '/api/check-redirect') {
+    const checkUrl = url.searchParams.get('url');
+    const result = await checkRedirect(checkUrl, request.headers, env);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  
+  // Normal redirect processing
+  const redirect = await processRedirect(request, env);
+  if (redirect) {
+    return redirect;
+  }
+  
+  // No redirect found
+  return new Response('No redirect found', { status: 404 });
+}
+```
+
+**Advantages:**
+- Flexible - can be used directly or as a service
+- Works with existing Worker architectures
+
+**Limitations:**
+- Requires HTTP requests between Workers (latency)
+- More complex implementation
+- Needs careful error handling
 
 ### Custom Domain (Optional)
 
@@ -1158,18 +1413,44 @@ Common issues:
 1. **KV Access Issues**: Ensure the KV namespace IDs are correctly set in `wrangler.jsonc`
 2. **Wrangler Authentication**: If you see authentication errors, run `wrangler login` to authenticate
 3. **Worker Limits**: Be aware of Cloudflare Workers limits, especially KV storage limits and CPU time
+4. **Service Binding Issues**: Ensure service names match exactly and both Workers are deployed to the same account
 
 Useful commands:
 ```bash
 # View recent logs
 wrangler tail
 
+# View logs for a specific worker
+wrangler tail --name redirector-service
+
 # Check KV content
 wrangler kv key get redirects --namespace-id=your-kv-namespace-id
 
 # Purge KV namespace
 wrangler kv key delete redirects --namespace-id=your-kv-namespace-id
+
+# List all workers in your account (useful for service bindings)
+wrangler whoami
+wrangler worker list
 ```
+
+#### Testing Service Bindings Locally
+
+To test Service Bindings locally, you need to run multiple instances of wrangler:
+
+1. First terminal: Run the Redirector service
+```bash
+cd redirector
+wrangler dev --name redirector-service
+```
+
+2. Second terminal: Run the dispatcher Worker with local service binding
+```bash
+cd dispatcher
+wrangler dev --local --service REDIRECTOR=redirector-service:localhost:8787
+```
+
+This connects the dispatcher to your locally-running Redirector service. You can then test the entire system by making requests to the dispatcher Worker.
 
 ### Backup and Recovery
 
@@ -1316,6 +1597,45 @@ When adding new features:
 4. **Tests**: Add tests in `test/`
 5. **Documentation**: Update documentation as needed
 
+## Service Binding Architecture Considerations
+
+When implementing the Service Binding Architecture with Redirector, consider these best practices:
+
+1. **Choose the Right Communication Method**:
+   - Use RPC for most internal communications due to better performance
+   - Use HTTP interface when you need to manipulate or examine the full HTTP request/response
+
+2. **Design Clear Service Interfaces**:
+   - Create well-defined methods with strong typing
+   - Document the expected inputs and outputs
+   - Consider versioning your service interfaces
+
+3. **Error Handling**:
+   - Implement proper error handling in both the service and the dispatcher
+   - Establish fallback strategies if the service is unavailable
+   - Use try/catch blocks around service calls
+
+4. **Deployment Strategy**:
+   - Consider using separate git repositories for each service
+   - Set up CI/CD pipelines for each service
+   - Implement a versioning strategy for your services
+
+5. **Monitoring**:
+   - Set up monitoring for each service individually
+   - Track inter-service communication metrics
+   - Use structured logging with correlation IDs
+
+6. **Security Considerations**:
+   - Service Bindings are not accessible to the public internet
+   - Consider implementing request validation in both services
+   - Implement principle of least privilege for each service
+
+7. **Performance Optimization**:
+   - Use Smart Placement to co-locate services
+   - Minimize data transfer between services
+   - Cache results where appropriate
+   - Batch operations when possible
+
 ## Future Enhancements
 
 1. Authentication for admin UI and API
@@ -1323,6 +1643,9 @@ When adding new features:
 3. Rate limiting and caching
 4. Analytics and reporting
 5. Integration with CI/CD pipelines
+6. Enhanced Service Binding support with more RPC methods
+7. Multi-account Service Binding support
+8. Performance metrics and dashboards
 
 ## Testing
 
