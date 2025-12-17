@@ -77,7 +77,7 @@ npm run cli download --format json --output redirects.json --remote
 npm run cli extract-sample redirect_list.tf --output-dir ./samples --count 10
 ```
 
-See the full CLI documentation in [/docs/CLI.md](/docs/CLI.md).
+See the main README.md for complete CLI documentation and usage examples.
 
 ## Development
 

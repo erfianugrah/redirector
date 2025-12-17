@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * Redirect schema using Zod 4 beta with improved features
+ * Redirect schema using Zod 3 beta for runtime type validation
  */
 export const RedirectSchema = z.object({
 	// Source URL pattern to match (can include parameters with :param syntax)
