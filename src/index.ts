@@ -142,12 +142,20 @@ app.get('/api/cache/stats', async (c) => {
   return c.json({ cache: stats });
 });
 
-// Clear cache
+// Clear redirect cache
 app.post('/api/cache/clear', async (c) => {
   const redirectService = createRedirectService(c.env);
   redirectService.clearCache();
 
-  return c.json({ success: true, message: 'Cache cleared' });
+  return c.json({ success: true, message: 'Redirect cache cleared' });
+});
+
+// Clear pattern cache
+app.post('/api/cache/clear-patterns', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  redirectService.clearPatternCache();
+
+  return c.json({ success: true, message: 'Pattern cache cleared' });
 });
 
 // Upload redirects from file

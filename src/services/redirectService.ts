@@ -17,11 +17,19 @@ export interface RedirectResult {
 
 const REDIRECT_MAP_CACHE_KEY = 'redirect_map';
 
+interface CompiledPattern {
+  regex: RegExp;
+  paramNames: string[];
+  wildcardParams: string[];
+  starWildcards: number[];
+}
+
 export class RedirectService {
   private readonly kv: Cloudflare.KVNamespace;
   private readonly allowedDomains: string[];
   private readonly allowExternalRedirects: boolean;
   private readonly cache: LRUCache<Record<string, Redirect>>;
+  private readonly patternCache: Map<string, CompiledPattern>;
 
   constructor(
     kv: Cloudflare.KVNamespace,
@@ -38,6 +46,9 @@ export class RedirectService {
     const ttl = cacheTtlSeconds ?? 60;
     const maxSize = cacheMaxSize ?? 1000;
     this.cache = new LRUCache<Record<string, Redirect>>(maxSize, ttl);
+
+    // Initialize pattern cache
+    this.patternCache = new Map();
 
     if (this.allowedDomains.length > 0) {
       logger.info(
@@ -257,8 +268,9 @@ export class RedirectService {
 
     await this.kv.put('redirects', JSON.stringify(redirectMap));
 
-    // Invalidate cache
+    // Invalidate caches
     this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
 
     logger.info({ source: redirect.source }, 'Saved redirect');
   }
@@ -296,8 +308,9 @@ export class RedirectService {
 
     await this.kv.put('redirects', JSON.stringify(redirectMap));
 
-    // Invalidate cache
+    // Invalidate caches
     this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
 
     logger.info({ count: redirects.length }, 'Saved bulk redirects');
   }
@@ -314,8 +327,9 @@ export class RedirectService {
     delete redirectMap[source];
     await this.kv.put('redirects', JSON.stringify(redirectMap));
 
-    // Invalidate cache
+    // Invalidate caches
     this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
 
     logger.info({ source }, 'Deleted redirect');
     return true;
@@ -357,18 +371,21 @@ export class RedirectService {
   }
 
   /**
-   * Utility to match a URL pattern with parameters, wildcards, and advanced patterns
+   * Compiles a pattern into a regex and caches it
    */
-  private matchPattern(path: string, pattern: string): Record<string, string> | null {
-    // Handle different pattern types
-    const params: Record<string, string> = {};
+  private compilePattern(pattern: string): CompiledPattern {
+    // Check cache first
+    const cached = this.patternCache.get(pattern);
+    if (cached) {
+      return cached;
+    }
+
+    // Compile the pattern
     let patternRegex = pattern;
-    
-    // Track parameter names and types
     const paramNames: string[] = [];
     const wildcardParams: string[] = [];
     const starWildcards: number[] = [];
-    
+
     // Replace pattern with regex components
     patternRegex = pattern
       // Step 1: Handle named splat parameters - :param* (multi-segment capture)
@@ -391,27 +408,51 @@ export class RedirectService {
         starWildcards.push(index);
         return '(.*)';
       });
-      
+
     // Create regex with proper anchoring
     const regex = new RegExp(`^${patternRegex}$`);
-    const match = path.match(regex);
-    
+
+    // Cache the compiled pattern
+    const compiled: CompiledPattern = {
+      regex,
+      paramNames,
+      wildcardParams,
+      starWildcards,
+    };
+    this.patternCache.set(pattern, compiled);
+
+    logger.debug({ pattern, cacheSize: this.patternCache.size }, 'Compiled and cached pattern');
+
+    return compiled;
+  }
+
+  /**
+   * Utility to match a URL pattern with parameters, wildcards, and advanced patterns
+   */
+  private matchPattern(path: string, pattern: string): Record<string, string> | null {
+    // Get or compile the pattern
+    const compiled = this.compilePattern(pattern);
+
+    // Match the path against the compiled regex
+    const match = path.match(compiled.regex);
+
     if (!match) {
       return null;
     }
-    
-    // Extract parameters
-    for (let i = 0; i < paramNames.length; i++) {
-      const name = paramNames[i];
+
+    // Extract parameters using cached metadata
+    const params: Record<string, string> = {};
+    for (let i = 0; i < compiled.paramNames.length; i++) {
+      const name = compiled.paramNames[i];
       const value = match[i + 1] || '';
       params[name] = value;
-      
+
       // Keep a special 'splat' parameter for compatibility with Terraform :splat syntax
       if (name.startsWith('_splat')) {
         params['splat'] = value;
       }
     }
-    
+
     return params;
   }
 
@@ -419,14 +460,26 @@ export class RedirectService {
    * Gets cache statistics
    */
   getCacheStats() {
-    return this.cache.getStats();
+    return {
+      redirectCache: this.cache.getStats(),
+      patternCacheSize: this.patternCache.size,
+    };
   }
 
   /**
-   * Clears the cache
+   * Clears the redirect map cache
    */
   clearCache(): void {
     this.cache.clear();
+  }
+
+  /**
+   * Clears the pattern cache
+   */
+  clearPatternCache(): void {
+    const size = this.patternCache.size;
+    this.patternCache.clear();
+    logger.info({ clearedPatterns: size }, 'Pattern cache cleared');
   }
 
   /**
