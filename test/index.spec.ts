@@ -427,7 +427,14 @@ describe('Redirector Worker Tests', () => {
         expect(response.headers.get('Location')).toBe('https://example.com/profiles/123/content/456');
       });
       
-      it('should handle absolute URLs with domain changes', () => {
+      it('should handle absolute URLs with domain changes when external redirects allowed', () => {
+        // Create a service that allows external redirects
+        const externalRedirectService = new RedirectService(
+          mockKV as unknown as KVNamespace,
+          undefined, // No domain whitelist
+          'true', // Allow external redirects
+        );
+
         const redirectResult: RedirectResult = {
           matched: true,
           redirect: {
@@ -439,11 +446,30 @@ describe('Redirector Worker Tests', () => {
             preserveHash: true
           }
         };
-        
+
+        const url = new URL('https://old-domain.com/path');
+        const response = externalRedirectService.processRedirect(redirectResult, url);
+
+        expect(response.headers.get('Location')).toBe('https://new-domain.com/path');
+      });
+
+      it('should block external redirects by default', () => {
+        const redirectResult: RedirectResult = {
+          matched: true,
+          redirect: {
+            source: 'https://old-domain.com/path',
+            destination: 'https://evil.com/path',
+            statusCode: 301,
+            enabled: true,
+            preserveQueryParams: true,
+            preserveHash: true
+          }
+        };
+
         const url = new URL('https://old-domain.com/path');
         const response = redirectService.processRedirect(redirectResult, url);
-        
-        expect(response.headers.get('Location')).toBe('https://new-domain.com/path');
+
+        expect(response.status).toBe(403);
       });
       
       it('should correctly handle wildcards with query parameters', () => {
