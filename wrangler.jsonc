@@ -51,6 +51,27 @@
 	/**
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
+	 *
+	 * Security Configuration:
+	 * - ALLOWED_DOMAINS: Comma-separated list of allowed external domains (supports wildcards: *.example.com)
+	 * - ALLOW_EXTERNAL_REDIRECTS: "true" to allow redirects to any external domain (default: false)
+	 *
+	 * Performance Configuration:
+	 * - CACHE_TTL: Cache time-to-live in seconds (default: 60)
+	 * - CACHE_MAX_SIZE: Maximum number of cached entries (default: 1000)
+	 *
+	 * Logging Configuration:
+	 * - LOG_LEVEL: Logging level (debug, info, warn, error)
+	 * - ENABLE_DEBUG: Enable debug mode (true/false)
+	 *
+	 * Example configuration:
+	 * "vars": {
+	 *   "LOG_LEVEL": "info",
+	 *   "ALLOWED_DOMAINS": "example.com,*.trusted.com",
+	 *   "ALLOW_EXTERNAL_REDIRECTS": "false",
+	 *   "CACHE_TTL": "60",
+	 *   "CACHE_MAX_SIZE": "1000"
+	 * }
 	 */
 	"vars": {
 		"LOG_LEVEL": "info",
