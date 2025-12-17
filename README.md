@@ -963,13 +963,113 @@ To refresh the data displayed in the Admin UI:
 
 Click the Refresh button in the header to update the statistics and the redirects table with the latest data from the server.
 
-### Security Considerations
+### Security Features
 
-The current implementation does not include authentication. In a production environment, you should secure the Admin UI by:
+The Redirector Worker includes comprehensive security features to protect your redirects and prevent common attacks:
 
-1. Adding authentication using Cloudflare Access or another authentication system
-2. Implementing API keys or JWT tokens for API access
-3. Restricting access to specific IP addresses or domains
+#### Authentication
+
+API key authentication is **required** for accessing the Admin UI and API endpoints. The implementation uses:
+- Constant-time string comparison to prevent timing attacks
+- Support for both admin and read-only API keys
+- Session-based storage in the browser (Admin UI)
+- Header-based authentication (`X-API-Key` or `Authorization: Bearer`)
+
+**Setup:**
+```bash
+# Set your admin API key (required)
+wrangler secret put ADMIN_API_KEY
+
+# Optional: Set a read-only API key for monitoring
+wrangler secret put READ_API_KEY
+```
+
+**Usage:**
+- **Admin UI**: Enter your API key in the authentication panel (stored in session storage)
+- **CLI**: Pass `--api-key` flag or set `REDIRECTOR_API_KEY` environment variable
+- **API**: Include `X-API-Key: your-key` header in all requests
+
+#### URL Validation (Open Redirect Prevention)
+
+Prevents attackers from using your redirects for phishing:
+- Blocks dangerous URL schemes (javascript:, data:, file:, etc.)
+- Only allows HTTP and HTTPS protocols
+- Defaults to same-origin redirects only
+- Optional domain whitelist with wildcard support
+
+**Configuration:**
+```bash
+# In wrangler.jsonc vars section:
+{
+  "vars": {
+    # Allow specific external domains (comma-separated)
+    "ALLOWED_DOMAINS": "example.com,*.trusted.com,partner.net",
+
+    # Enable external redirects (use with caution)
+    "ALLOW_EXTERNAL_REDIRECTS": "false"
+  }
+}
+```
+
+**Examples:**
+```javascript
+// Same-origin (always allowed)
+/old-path → /new-path
+
+// External domain (requires ALLOWED_DOMAINS or ALLOW_EXTERNAL_REDIRECTS)
+/external → https://trusted.com/path
+
+// Blocked (dangerous schemes)
+/malicious → javascript:alert(1)  // ❌ Blocked
+/unsafe → data:text/html,...      // ❌ Blocked
+```
+
+#### Pattern Validation (ReDoS Prevention)
+
+Prevents Regular Expression Denial of Service attacks:
+- Maximum pattern length: 200 characters
+- Whitelisted characters only: `[a-zA-Z0-9:/*_.\-?&=#+%@!~]`
+- Blocks nested quantifiers and complex regex patterns
+- Validates patterns before saving
+
+**Safe patterns:**
+```javascript
+/old-path              // ✅ Simple path
+/products/:id          // ✅ Path parameters
+/docs/*                // ✅ Wildcards
+/files/:path*          // ✅ Named wildcards
+```
+
+**Blocked patterns:**
+```javascript
+/(a+)+                 // ❌ Nested quantifiers (ReDoS risk)
+/path/**/file          // ❌ Consecutive wildcards
+/path<script>          // ❌ Invalid characters
+```
+
+#### CSV Injection Prevention
+
+Protects exported CSV files from formula injection:
+- Automatically sanitizes values starting with `=`, `+`, `@`, `-`
+- Prefixes dangerous characters with single quote
+- Prevents code execution in Excel/Google Sheets
+
+#### Additional Security
+
+- **Rate Limiting**: Consider implementing at Cloudflare level
+- **IP Restrictions**: Use Cloudflare Access for IP-based access control
+- **Audit Logging**: All authentication failures and blocked redirects are logged
+- **Input Validation**: All API inputs validated with Zod schemas
+
+### Security Best Practices
+
+1. **Always use HTTPS** in production
+2. **Rotate API keys** regularly
+3. **Use READ_API_KEY** for monitoring tools
+4. **Configure ALLOWED_DOMAINS** restrictively
+5. **Monitor logs** for suspicious activity
+6. **Keep secrets in Wrangler secrets**, never in code
+7. **Test redirects** before deploying to production
 
 ## Deployment Guide
 

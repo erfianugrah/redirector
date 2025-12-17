@@ -199,6 +199,18 @@ export function getAdminHtml(redirectCount: number): string {
       </div>
     </header>
     
+    <div class="card" style="background-color: #fff3cd; border-left: 4px solid var(--primary);">
+      <h2>🔐 Authentication</h2>
+      <div class="form-group">
+        <label for="apiKey">API Key (required)</label>
+        <input type="password" id="apiKey" placeholder="Enter your API key..." autocomplete="off">
+        <small style="color: #666; display: block; margin-top: 0.5rem;">
+          This key is required to access the admin panel and API. Stored only in your browser session.
+        </small>
+      </div>
+      <div class="error" id="authError"></div>
+    </div>
+
     <div class="stats">
       <h3>Statistics</h3>
       <p>Total Redirects: <strong id="redirectCount">${redirectCount}</strong></p>
@@ -278,6 +290,8 @@ export function getAdminHtml(redirectCount: number): string {
   
   <script>
     // Elements
+    const apiKeyElem = document.getElementById('apiKey');
+    const authErrorElem = document.getElementById('authError');
     const fileContentElem = document.getElementById('fileContent');
     const uploadFormatElem = document.getElementById('uploadFormat');
     const overwriteElem = document.getElementById('overwrite');
@@ -291,9 +305,54 @@ export function getAdminHtml(redirectCount: number): string {
     const redirectsListElem = document.getElementById('redirectsList');
     const redirectCountElem = document.getElementById('redirectCount');
     const refreshBtn = document.getElementById('refreshBtn');
+
+    // API Key Management
+    function getApiKey() {
+      return apiKeyElem.value.trim() || sessionStorage.getItem('apiKey') || '';
+    }
+
+    function saveApiKey() {
+      const key = apiKeyElem.value.trim();
+      if (key) {
+        sessionStorage.setItem('apiKey', key);
+      }
+    }
+
+    function loadApiKey() {
+      const savedKey = sessionStorage.getItem('apiKey');
+      if (savedKey) {
+        apiKeyElem.value = savedKey;
+      }
+    }
+
+    function getHeaders() {
+      const apiKey = getApiKey();
+      return {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey
+      };
+    }
+
+    function handleAuthError(message) {
+      authErrorElem.textContent = message || 'Authentication failed. Please check your API key.';
+      authErrorElem.style.display = 'block';
+      // Clear invalid key from session
+      sessionStorage.removeItem('apiKey');
+    }
+
+    function clearAuthError() {
+      authErrorElem.style.display = 'none';
+    }
+
+    // Save API key when it changes
+    apiKeyElem.addEventListener('input', () => {
+      saveApiKey();
+      clearAuthError();
+    });
     
     // Load redirects on page load
     window.addEventListener('DOMContentLoaded', () => {
+      loadApiKey();
       loadRedirects();
     });
     
@@ -322,21 +381,23 @@ export function getAdminHtml(redirectCount: number): string {
         // Upload content
         const response = await fetch('/api/files/upload', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: getHeaders(),
           body: JSON.stringify({ content, format, overwrite })
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {
           showUploadSuccess(data.message);
+          clearAuthError();
           // Refresh redirects list
           loadRedirects();
           // Clear form
           fileContentElem.value = '';
         } else {
+          if (response.status === 401) {
+            handleAuthError(data.message);
+          }
           showUploadError(data.message || 'Upload failed');
         }
       } catch (error) {
@@ -352,10 +413,13 @@ export function getAdminHtml(redirectCount: number): string {
     // Load redirects from API
     async function loadRedirects() {
       try {
-        const response = await fetch('/api/redirects');
+        const response = await fetch('/api/redirects', {
+          headers: getHeaders()
+        });
         const data = await response.json();
-        
+
         if (response.ok) {
+          clearAuthError();
           const redirects = data.redirects || {};
           const redirectsArray = Object.values(redirects);
           
@@ -410,13 +474,11 @@ export function getAdminHtml(redirectCount: number): string {
     async function downloadRedirects(format) {
       try {
         downloadErrorElem.style.display = 'none';
-        
+
         // Request file download
         const response = await fetch('/api/files/download', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: getHeaders(),
           body: JSON.stringify({ format })
         });
         
@@ -448,8 +510,12 @@ export function getAdminHtml(redirectCount: number): string {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
           }, 0);
+          clearAuthError();
         } else {
           const data = await response.json();
+          if (response.status === 401) {
+            handleAuthError(data.message);
+          }
           downloadErrorElem.textContent = data.message || 'Download failed';
           downloadErrorElem.style.display = 'block';
         }
@@ -464,14 +530,19 @@ export function getAdminHtml(redirectCount: number): string {
       try {
         const encodedSource = encodeURIComponent(source);
         const response = await fetch(\`/api/redirects/\${encodedSource}\`, {
-          method: 'DELETE'
+          method: 'DELETE',
+          headers: getHeaders()
         });
-        
+
         if (response.ok) {
+          clearAuthError();
           // Refresh redirects list
           loadRedirects();
         } else {
           const data = await response.json();
+          if (response.status === 401) {
+            handleAuthError(data.message);
+          }
           alert(data.message || 'Failed to delete redirect');
         }
       } catch (error) {

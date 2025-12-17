@@ -11,7 +11,9 @@ interface LoggerOptions {
  * Creates a pino logger instance with appropriate worker environment configuration
  */
 export function createLogger(options: LoggerOptions = {}) {
-  const isProduction = typeof process === 'undefined';
+  // In Cloudflare Workers, process is not available
+  // We detect environment based on presence of global objects
+  const isProduction = typeof (globalThis as { process?: unknown }).process === 'undefined';
 
   return pino({
     level: options.level || 'info',

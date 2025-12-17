@@ -11,20 +11,21 @@ This directory contains tests for the Redirector Worker.
 
 - `env.d.ts`: TypeScript definitions for test environment
 - `tsconfig.json`: TypeScript configuration for tests
+- `vitest.config.mts`: Vitest configuration with Cloudflare Workers pool
 
 ## Running Tests
 
 ```bash
-# Run tests in watch mode
+# Run all tests once
 npm test
 
-# Run tests once
-npm run test:run
+# Run tests with coverage
+npm run test:coverage
 
 # Run a specific test file
-npx vitest run format.spec.ts
+npx vitest run test/format.spec.ts
 ```
 
 ## Test Framework
 
-The project uses Vitest with @cloudflare/vitest-pool-workers for testing Cloudflare Workers.
+The project uses Vitest with `@cloudflare/vitest-pool-workers` for testing Cloudflare Workers in a realistic environment.

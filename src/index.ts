@@ -4,6 +4,7 @@ import { RedirectSchema, BulkRedirectsSchema, Redirect } from './schemas/redirec
 import { RedirectService } from './services/redirectService';
 import { FormatService } from './services/formatService';
 import { logger } from './utils/logger';
+import { createAuthMiddleware } from './utils/auth';
 import { z } from 'zod';
 import { FileUploadSchema, FileDownloadSchema, FileFormat } from './schemas/file-formats';
 import { getAdminHtml } from './utils/admin-ui';
@@ -14,10 +15,30 @@ import { getAdminHtml } from './utils/admin-ui';
 type Env = {
   REDIRECTS_KV: Cloudflare.KVNamespace;
   LOG_LEVEL?: string;
+  ADMIN_API_KEY?: string;
+  READ_API_KEY?: string;
+  ALLOWED_DOMAINS?: string;
+  ALLOW_EXTERNAL_REDIRECTS?: string;
+  CACHE_TTL?: string;
+  CACHE_MAX_SIZE?: string;
 };
 
 // Create the Hono app with typed environment
 const app = new Hono<{ Bindings: Env }>();
+
+// Helper function to create RedirectService with environment configuration
+function createRedirectService(env: Env): RedirectService {
+  const cacheTtl = env.CACHE_TTL ? parseInt(env.CACHE_TTL, 10) : undefined;
+  const cacheMaxSize = env.CACHE_MAX_SIZE ? parseInt(env.CACHE_MAX_SIZE, 10) : undefined;
+
+  return new RedirectService(
+    env.REDIRECTS_KV,
+    env.ALLOWED_DOMAINS,
+    env.ALLOW_EXTERNAL_REDIRECTS,
+    cacheTtl,
+    cacheMaxSize,
+  );
+}
 
 // Configure logging middleware
 app.use('*', async (c, next) => {
@@ -46,24 +67,29 @@ app.use('*', async (c, next) => {
   logger.info({ responseTime }, 'Request completed');
 });
 
-// Health check endpoint
+// Health check endpoint (public - no authentication)
 app.get('/health', (c) => {
   return c.json({ status: 'ok' });
 });
 
+// Apply authentication middleware to admin and API routes
+// Admin UI requires authentication
+app.use('/admin', createAuthMiddleware());
+app.use('/api/*', createAuthMiddleware());
+
 // Admin UI
 app.get('/admin', async (c) => {
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   const redirects = await redirectService.getRedirectMap();
   const redirectCount = redirects ? Object.keys(redirects).length : 0;
-  
+
   return c.html(getAdminHtml(redirectCount));
 });
 
 // Handle redirects - this must be before the API routes
 app.get('*', async (c, next) => {
   const url = new URL(c.req.url);
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   
   // Skip API routes
   if (url.pathname.startsWith('/api')) {
@@ -85,7 +111,7 @@ app.get('*', async (c, next) => {
 // Create a new redirect
 app.post('/api/redirects', zValidator('json', RedirectSchema), async (c) => {
   const redirect = c.req.valid('json');
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   
   await redirectService.saveRedirect(redirect);
   return c.json({ success: true, redirect }, 201);
@@ -94,7 +120,7 @@ app.post('/api/redirects', zValidator('json', RedirectSchema), async (c) => {
 // Bulk upload redirects
 app.post('/api/redirects/bulk', zValidator('json', BulkRedirectsSchema), async (c) => {
   const { redirects } = c.req.valid('json');
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   
   await redirectService.saveBulkRedirects(redirects);
   return c.json({ success: true, count: redirects.length }, 201);
@@ -102,16 +128,40 @@ app.post('/api/redirects/bulk', zValidator('json', BulkRedirectsSchema), async (
 
 // Get all redirects
 app.get('/api/redirects', async (c) => {
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   const redirects = await redirectService.getRedirectMap();
-  
+
   return c.json({ redirects: redirects || {} });
+});
+
+// Get cache statistics
+app.get('/api/cache/stats', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  const stats = redirectService.getCacheStats();
+
+  return c.json({ cache: stats });
+});
+
+// Clear redirect cache
+app.post('/api/cache/clear', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  redirectService.clearCache();
+
+  return c.json({ success: true, message: 'Redirect cache cleared' });
+});
+
+// Clear pattern cache
+app.post('/api/cache/clear-patterns', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  redirectService.clearPatternCache();
+
+  return c.json({ success: true, message: 'Pattern cache cleared' });
 });
 
 // Upload redirects from file
 app.post('/api/files/upload', zValidator('json', FileUploadSchema), async (c) => {
   const { format, content, overwrite } = c.req.valid('json');
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   const formatService = new FormatService();
   
   try {
@@ -161,7 +211,7 @@ app.post('/api/files/upload', zValidator('json', FileUploadSchema), async (c) =>
 // Delete a redirect
 app.delete('/api/redirects/:source', async (c) => {
   const source = c.req.param('source');
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   
   const deleted = await redirectService.deleteRedirect(decodeURIComponent(source));
   if (!deleted) {
@@ -174,7 +224,7 @@ app.delete('/api/redirects/:source', async (c) => {
 // Download redirects as file
 app.post('/api/files/download', zValidator('json', FileDownloadSchema), async (c) => {
   const { format } = c.req.valid('json');
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   const formatService = new FormatService();
   
   try {
@@ -235,7 +285,7 @@ app.post('/api/redirects/test', zValidator('json', z.object({
     headers: new Headers(headers),
   });
   
-  const redirectService = new RedirectService(c.env.REDIRECTS_KV);
+  const redirectService = createRedirectService(c.env);
   const redirectResult = await redirectService.matchRedirect(url, mockRequest);
   
   if (!redirectResult.matched) {

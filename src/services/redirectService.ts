@@ -1,5 +1,11 @@
 import { Redirect, RedirectMapSchema } from '../schemas/redirect';
 import { logger } from '../utils/logger';
+import {
+	validateDestinationUrl,
+	validateRedirectPattern,
+	parseAllowedDomains,
+} from '../utils/validation';
+import { LRUCache } from '../utils/cache';
 
 // Cloudflare type references are handled via TSConfig and ESLint config
 
@@ -9,11 +15,52 @@ export interface RedirectResult {
   params?: Record<string, string>;
 }
 
+const REDIRECT_MAP_CACHE_KEY = 'redirect_map';
+
+interface CompiledPattern {
+  regex: RegExp;
+  paramNames: string[];
+  wildcardParams: string[];
+  starWildcards: number[];
+}
+
 export class RedirectService {
   private readonly kv: Cloudflare.KVNamespace;
+  private readonly allowedDomains: string[];
+  private readonly allowExternalRedirects: boolean;
+  private readonly cache: LRUCache<Record<string, Redirect>>;
+  private readonly patternCache: Map<string, CompiledPattern>;
 
-  constructor(kv: Cloudflare.KVNamespace) {
+  constructor(
+    kv: Cloudflare.KVNamespace,
+    allowedDomainsConfig?: string,
+    allowExternalRedirects?: string,
+    cacheTtlSeconds?: number,
+    cacheMaxSize?: number,
+  ) {
     this.kv = kv;
+    this.allowedDomains = parseAllowedDomains(allowedDomainsConfig);
+    this.allowExternalRedirects = allowExternalRedirects === 'true';
+
+    // Initialize cache with configuration
+    const ttl = cacheTtlSeconds ?? 60;
+    const maxSize = cacheMaxSize ?? 1000;
+    this.cache = new LRUCache<Record<string, Redirect>>(maxSize, ttl);
+
+    // Initialize pattern cache
+    this.patternCache = new Map();
+
+    if (this.allowedDomains.length > 0) {
+      logger.info(
+        { allowedDomains: this.allowedDomains },
+        'Configured allowed domains for redirects',
+      );
+    }
+
+    logger.info(
+      { cacheTtl: ttl, cacheMaxSize: maxSize },
+      'Redirect cache initialized',
+    );
   }
 
   /**
@@ -105,6 +152,26 @@ export class RedirectService {
     }
 
     const { redirect, params = {} } = redirectResult;
+
+    // Validate destination URL before processing
+    const validationResult = validateDestinationUrl(
+      redirect.destination,
+      url.origin,
+      this.allowedDomains,
+      this.allowExternalRedirects,
+    );
+
+    if (!validationResult.valid) {
+      logger.error(
+        {
+          source: redirect.source,
+          destination: redirect.destination,
+          reason: validationResult.reason,
+        },
+        'Blocked unsafe redirect',
+      );
+      return new Response('Forbidden', { status: 403 });
+    }
     
     // Substitute any parameters in the destination
     let destination = redirect.destination;
@@ -177,18 +244,63 @@ export class RedirectService {
       params
     }, 'Processed redirect');
 
-    // Create the response with appropriate status code
-    return Response.redirect(destUrl.toString(), redirect.statusCode);
+    // Create the response with appropriate status code and cache headers
+    const response = Response.redirect(destUrl.toString(), redirect.statusCode);
+
+    // Add cache headers based on redirect type
+    const cacheTTL = this.getCacheTTLForStatusCode(redirect.statusCode);
+    const headers = new Headers(response.headers);
+    headers.set('Cache-Control', `public, max-age=${cacheTTL}`);
+    headers.set('CDN-Cache-Control', `public, max-age=${cacheTTL}`);
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  /**
+   * Determines cache TTL based on HTTP status code
+   */
+  private getCacheTTLForStatusCode(statusCode: number): number {
+    switch (statusCode) {
+      case 301: // Permanent redirect
+      case 308: // Permanent redirect (preserve method)
+        return 31536000; // 1 year
+      case 302: // Temporary redirect
+      case 303: // See Other
+      case 307: // Temporary redirect (preserve method)
+        return 3600; // 1 hour
+      default:
+        return 3600; // Default to 1 hour
+    }
   }
 
   /**
    * Saves a new redirect to KV
    */
   async saveRedirect(redirect: Redirect): Promise<void> {
+    // Validate source pattern
+    const patternValidation = validateRedirectPattern(redirect.source);
+    if (!patternValidation.valid) {
+      const error = new Error(patternValidation.reason || 'Invalid redirect pattern');
+      logger.error(
+        { source: redirect.source, reason: patternValidation.reason },
+        'Invalid redirect pattern',
+      );
+      throw error;
+    }
+
     const redirectMap = await this.getRedirectMap() || {};
     redirectMap[redirect.source] = redirect;
-    
+
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate caches
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
+
     logger.info({ source: redirect.source }, 'Saved redirect');
   }
 
@@ -197,12 +309,38 @@ export class RedirectService {
    */
   async saveBulkRedirects(redirects: Redirect[]): Promise<void> {
     const redirectMap = await this.getRedirectMap() || {};
-    
+
+    // Validate all redirects before saving any
+    const invalidRedirects: Array<{ source: string; reason: string }> = [];
+    for (const redirect of redirects) {
+      const patternValidation = validateRedirectPattern(redirect.source);
+      if (!patternValidation.valid) {
+        invalidRedirects.push({
+          source: redirect.source,
+          reason: patternValidation.reason || 'Invalid pattern',
+        });
+      }
+    }
+
+    // If any redirects are invalid, reject the entire batch
+    if (invalidRedirects.length > 0) {
+      const error = new Error(
+        `Invalid redirect patterns found: ${invalidRedirects.map(r => `${r.source} (${r.reason})`).join(', ')}`,
+      );
+      logger.error({ invalidRedirects }, 'Bulk save rejected due to invalid patterns');
+      throw error;
+    }
+
     for (const redirect of redirects) {
       redirectMap[redirect.source] = redirect;
     }
-    
+
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate caches
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
+
     logger.info({ count: redirects.length }, 'Saved bulk redirects');
   }
 
@@ -214,31 +352,46 @@ export class RedirectService {
     if (!redirectMap || !redirectMap[source]) {
       return false;
     }
-    
+
     delete redirectMap[source];
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate caches
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+    this.clearPatternCache();
+
     logger.info({ source }, 'Deleted redirect');
     return true;
   }
 
   /**
-   * Retrieves all redirects from KV
+   * Retrieves all redirects from KV with caching
    */
   async getRedirectMap(): Promise<Record<string, Redirect> | null> {
+    // Check cache first
+    const cached = this.cache.get(REDIRECT_MAP_CACHE_KEY);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // Cache miss - fetch from KV
     const data = await this.kv.get('redirects');
     if (!data) {
       return null;
     }
-    
+
     try {
       const result = JSON.parse(data);
       const parsed = RedirectMapSchema.safeParse(result);
-      
+
       if (!parsed.success) {
         logger.error({ error: parsed.error }, 'Failed to parse redirects');
         return null;
       }
-      
+
+      // Store in cache
+      this.cache.set(REDIRECT_MAP_CACHE_KEY, parsed.data);
+
       return parsed.data;
     } catch (error) {
       logger.error({ error }, 'Error parsing redirects');
@@ -247,18 +400,21 @@ export class RedirectService {
   }
 
   /**
-   * Utility to match a URL pattern with parameters, wildcards, and advanced patterns
+   * Compiles a pattern into a regex and caches it
    */
-  private matchPattern(path: string, pattern: string): Record<string, string> | null {
-    // Handle different pattern types
-    const params: Record<string, string> = {};
+  private compilePattern(pattern: string): CompiledPattern {
+    // Check cache first
+    const cached = this.patternCache.get(pattern);
+    if (cached) {
+      return cached;
+    }
+
+    // Compile the pattern
     let patternRegex = pattern;
-    
-    // Track parameter names and types
     const paramNames: string[] = [];
     const wildcardParams: string[] = [];
     const starWildcards: number[] = [];
-    
+
     // Replace pattern with regex components
     patternRegex = pattern
       // Step 1: Handle named splat parameters - :param* (multi-segment capture)
@@ -281,28 +437,78 @@ export class RedirectService {
         starWildcards.push(index);
         return '(.*)';
       });
-      
+
     // Create regex with proper anchoring
     const regex = new RegExp(`^${patternRegex}$`);
-    const match = path.match(regex);
-    
+
+    // Cache the compiled pattern
+    const compiled: CompiledPattern = {
+      regex,
+      paramNames,
+      wildcardParams,
+      starWildcards,
+    };
+    this.patternCache.set(pattern, compiled);
+
+    logger.debug({ pattern, cacheSize: this.patternCache.size }, 'Compiled and cached pattern');
+
+    return compiled;
+  }
+
+  /**
+   * Utility to match a URL pattern with parameters, wildcards, and advanced patterns
+   */
+  private matchPattern(path: string, pattern: string): Record<string, string> | null {
+    // Get or compile the pattern
+    const compiled = this.compilePattern(pattern);
+
+    // Match the path against the compiled regex
+    const match = path.match(compiled.regex);
+
     if (!match) {
       return null;
     }
-    
-    // Extract parameters
-    for (let i = 0; i < paramNames.length; i++) {
-      const name = paramNames[i];
+
+    // Extract parameters using cached metadata
+    const params: Record<string, string> = {};
+    for (let i = 0; i < compiled.paramNames.length; i++) {
+      const name = compiled.paramNames[i];
       const value = match[i + 1] || '';
       params[name] = value;
-      
+
       // Keep a special 'splat' parameter for compatibility with Terraform :splat syntax
       if (name.startsWith('_splat')) {
         params['splat'] = value;
       }
     }
-    
+
     return params;
+  }
+
+  /**
+   * Gets cache statistics
+   */
+  getCacheStats() {
+    return {
+      redirectCache: this.cache.getStats(),
+      patternCacheSize: this.patternCache.size,
+    };
+  }
+
+  /**
+   * Clears the redirect map cache
+   */
+  clearCache(): void {
+    this.cache.clear();
+  }
+
+  /**
+   * Clears the pattern cache
+   */
+  clearPatternCache(): void {
+    const size = this.patternCache.size;
+    this.patternCache.clear();
+    logger.info({ clearedPatterns: size }, 'Pattern cache cleared');
   }
 
   /**
