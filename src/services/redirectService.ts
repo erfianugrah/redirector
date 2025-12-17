@@ -1,5 +1,10 @@
 import { Redirect, RedirectMapSchema } from '../schemas/redirect';
 import { logger } from '../utils/logger';
+import {
+	validateDestinationUrl,
+	validateRedirectPattern,
+	parseAllowedDomains,
+} from '../utils/validation';
 
 // Cloudflare type references are handled via TSConfig and ESLint config
 
@@ -11,9 +16,24 @@ export interface RedirectResult {
 
 export class RedirectService {
   private readonly kv: Cloudflare.KVNamespace;
+  private readonly allowedDomains: string[];
+  private readonly allowExternalRedirects: boolean;
 
-  constructor(kv: Cloudflare.KVNamespace) {
+  constructor(
+    kv: Cloudflare.KVNamespace,
+    allowedDomainsConfig?: string,
+    allowExternalRedirects?: string,
+  ) {
     this.kv = kv;
+    this.allowedDomains = parseAllowedDomains(allowedDomainsConfig);
+    this.allowExternalRedirects = allowExternalRedirects === 'true';
+
+    if (this.allowedDomains.length > 0) {
+      logger.info(
+        { allowedDomains: this.allowedDomains },
+        'Configured allowed domains for redirects',
+      );
+    }
   }
 
   /**
@@ -105,6 +125,26 @@ export class RedirectService {
     }
 
     const { redirect, params = {} } = redirectResult;
+
+    // Validate destination URL before processing
+    const validationResult = validateDestinationUrl(
+      redirect.destination,
+      url.origin,
+      this.allowedDomains,
+      this.allowExternalRedirects,
+    );
+
+    if (!validationResult.valid) {
+      logger.error(
+        {
+          source: redirect.source,
+          destination: redirect.destination,
+          reason: validationResult.reason,
+        },
+        'Blocked unsafe redirect',
+      );
+      return new Response('Forbidden', { status: 403 });
+    }
     
     // Substitute any parameters in the destination
     let destination = redirect.destination;
@@ -185,9 +225,20 @@ export class RedirectService {
    * Saves a new redirect to KV
    */
   async saveRedirect(redirect: Redirect): Promise<void> {
+    // Validate source pattern
+    const patternValidation = validateRedirectPattern(redirect.source);
+    if (!patternValidation.valid) {
+      const error = new Error(patternValidation.reason || 'Invalid redirect pattern');
+      logger.error(
+        { source: redirect.source, reason: patternValidation.reason },
+        'Invalid redirect pattern',
+      );
+      throw error;
+    }
+
     const redirectMap = await this.getRedirectMap() || {};
     redirectMap[redirect.source] = redirect;
-    
+
     await this.kv.put('redirects', JSON.stringify(redirectMap));
     logger.info({ source: redirect.source }, 'Saved redirect');
   }
@@ -197,11 +248,32 @@ export class RedirectService {
    */
   async saveBulkRedirects(redirects: Redirect[]): Promise<void> {
     const redirectMap = await this.getRedirectMap() || {};
-    
+
+    // Validate all redirects before saving any
+    const invalidRedirects: Array<{ source: string; reason: string }> = [];
+    for (const redirect of redirects) {
+      const patternValidation = validateRedirectPattern(redirect.source);
+      if (!patternValidation.valid) {
+        invalidRedirects.push({
+          source: redirect.source,
+          reason: patternValidation.reason || 'Invalid pattern',
+        });
+      }
+    }
+
+    // If any redirects are invalid, reject the entire batch
+    if (invalidRedirects.length > 0) {
+      const error = new Error(
+        `Invalid redirect patterns found: ${invalidRedirects.map(r => `${r.source} (${r.reason})`).join(', ')}`,
+      );
+      logger.error({ invalidRedirects }, 'Bulk save rejected due to invalid patterns');
+      throw error;
+    }
+
     for (const redirect of redirects) {
       redirectMap[redirect.source] = redirect;
     }
-    
+
     await this.kv.put('redirects', JSON.stringify(redirectMap));
     logger.info({ count: redirects.length }, 'Saved bulk redirects');
   }

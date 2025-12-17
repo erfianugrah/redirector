@@ -1,6 +1,7 @@
 import { Redirect } from '../schemas/redirect';
 import { FileFormat } from '../schemas/file-formats';
 import { logger } from '../utils/logger';
+import { sanitizeCsvValue } from '../utils/validation';
 
 // These types are used in the type checking but not directly
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -304,17 +305,21 @@ export class FormatService {
   }
 
   /**
-   * Escape CSV value
+   * Escape CSV value and sanitize to prevent injection attacks
    */
   private escapeCsvValue(value: string): string {
     if (!value) return '';
-    
+
+    // First sanitize to prevent CSV injection
+    let sanitized = sanitizeCsvValue(value);
+
+    // Then escape for CSV format
     // If value contains comma, newline or quote, wrap in quotes and escape quotes
-    if (value.includes(',') || value.includes('\n') || value.includes('"')) {
-      return '"' + value.replace(/"/g, '""') + '"';
+    if (sanitized.includes(',') || sanitized.includes('\n') || sanitized.includes('"')) {
+      sanitized = '"' + sanitized.replace(/"/g, '""') + '"';
     }
-    
-    return value;
+
+    return sanitized;
   }
 
   /**
