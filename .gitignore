@@ -50,3 +50,4 @@ logs/
 
 # Keep this file
 !.wrangler/settings.json
+*CLAUDE*
