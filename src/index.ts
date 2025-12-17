@@ -19,6 +19,8 @@ type Env = {
   READ_API_KEY?: string;
   ALLOWED_DOMAINS?: string;
   ALLOW_EXTERNAL_REDIRECTS?: string;
+  CACHE_TTL?: string;
+  CACHE_MAX_SIZE?: string;
 };
 
 // Create the Hono app with typed environment
@@ -26,10 +28,15 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Helper function to create RedirectService with environment configuration
 function createRedirectService(env: Env): RedirectService {
+  const cacheTtl = env.CACHE_TTL ? parseInt(env.CACHE_TTL, 10) : undefined;
+  const cacheMaxSize = env.CACHE_MAX_SIZE ? parseInt(env.CACHE_MAX_SIZE, 10) : undefined;
+
   return new RedirectService(
     env.REDIRECTS_KV,
     env.ALLOWED_DOMAINS,
     env.ALLOW_EXTERNAL_REDIRECTS,
+    cacheTtl,
+    cacheMaxSize,
   );
 }
 
@@ -123,8 +130,24 @@ app.post('/api/redirects/bulk', zValidator('json', BulkRedirectsSchema), async (
 app.get('/api/redirects', async (c) => {
   const redirectService = createRedirectService(c.env);
   const redirects = await redirectService.getRedirectMap();
-  
+
   return c.json({ redirects: redirects || {} });
+});
+
+// Get cache statistics
+app.get('/api/cache/stats', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  const stats = redirectService.getCacheStats();
+
+  return c.json({ cache: stats });
+});
+
+// Clear cache
+app.post('/api/cache/clear', async (c) => {
+  const redirectService = createRedirectService(c.env);
+  redirectService.clearCache();
+
+  return c.json({ success: true, message: 'Cache cleared' });
 });
 
 // Upload redirects from file

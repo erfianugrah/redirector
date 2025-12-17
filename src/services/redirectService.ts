@@ -5,6 +5,7 @@ import {
 	validateRedirectPattern,
 	parseAllowedDomains,
 } from '../utils/validation';
+import { LRUCache } from '../utils/cache';
 
 // Cloudflare type references are handled via TSConfig and ESLint config
 
@@ -14,19 +15,29 @@ export interface RedirectResult {
   params?: Record<string, string>;
 }
 
+const REDIRECT_MAP_CACHE_KEY = 'redirect_map';
+
 export class RedirectService {
   private readonly kv: Cloudflare.KVNamespace;
   private readonly allowedDomains: string[];
   private readonly allowExternalRedirects: boolean;
+  private readonly cache: LRUCache<Record<string, Redirect>>;
 
   constructor(
     kv: Cloudflare.KVNamespace,
     allowedDomainsConfig?: string,
     allowExternalRedirects?: string,
+    cacheTtlSeconds?: number,
+    cacheMaxSize?: number,
   ) {
     this.kv = kv;
     this.allowedDomains = parseAllowedDomains(allowedDomainsConfig);
     this.allowExternalRedirects = allowExternalRedirects === 'true';
+
+    // Initialize cache with configuration
+    const ttl = cacheTtlSeconds ?? 60;
+    const maxSize = cacheMaxSize ?? 1000;
+    this.cache = new LRUCache<Record<string, Redirect>>(maxSize, ttl);
 
     if (this.allowedDomains.length > 0) {
       logger.info(
@@ -34,6 +45,11 @@ export class RedirectService {
         'Configured allowed domains for redirects',
       );
     }
+
+    logger.info(
+      { cacheTtl: ttl, cacheMaxSize: maxSize },
+      'Redirect cache initialized',
+    );
   }
 
   /**
@@ -240,6 +256,10 @@ export class RedirectService {
     redirectMap[redirect.source] = redirect;
 
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate cache
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+
     logger.info({ source: redirect.source }, 'Saved redirect');
   }
 
@@ -275,6 +295,10 @@ export class RedirectService {
     }
 
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate cache
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+
     logger.info({ count: redirects.length }, 'Saved bulk redirects');
   }
 
@@ -286,31 +310,45 @@ export class RedirectService {
     if (!redirectMap || !redirectMap[source]) {
       return false;
     }
-    
+
     delete redirectMap[source];
     await this.kv.put('redirects', JSON.stringify(redirectMap));
+
+    // Invalidate cache
+    this.cache.delete(REDIRECT_MAP_CACHE_KEY);
+
     logger.info({ source }, 'Deleted redirect');
     return true;
   }
 
   /**
-   * Retrieves all redirects from KV
+   * Retrieves all redirects from KV with caching
    */
   async getRedirectMap(): Promise<Record<string, Redirect> | null> {
+    // Check cache first
+    const cached = this.cache.get(REDIRECT_MAP_CACHE_KEY);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // Cache miss - fetch from KV
     const data = await this.kv.get('redirects');
     if (!data) {
       return null;
     }
-    
+
     try {
       const result = JSON.parse(data);
       const parsed = RedirectMapSchema.safeParse(result);
-      
+
       if (!parsed.success) {
         logger.error({ error: parsed.error }, 'Failed to parse redirects');
         return null;
       }
-      
+
+      // Store in cache
+      this.cache.set(REDIRECT_MAP_CACHE_KEY, parsed.data);
+
       return parsed.data;
     } catch (error) {
       logger.error({ error }, 'Error parsing redirects');
@@ -375,6 +413,20 @@ export class RedirectService {
     }
     
     return params;
+  }
+
+  /**
+   * Gets cache statistics
+   */
+  getCacheStats() {
+    return this.cache.getStats();
+  }
+
+  /**
+   * Clears the cache
+   */
+  clearCache(): void {
+    this.cache.clear();
   }
 
   /**
