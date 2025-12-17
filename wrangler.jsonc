@@ -94,8 +94,19 @@
 		}
 	}
 	/**
-	 * Note: Use secrets to store sensitive data.
+	 * Secrets Configuration
+	 * Use secrets to store sensitive data like API keys.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
+	 *
+	 * Required secrets for production:
+	 * - ADMIN_API_KEY: Full access API key for admin operations
+	 *
+	 * Optional secrets:
+	 * - READ_API_KEY: Read-only access API key
+	 *
+	 * To set secrets:
+	 * wrangler secret put ADMIN_API_KEY
+	 * wrangler secret put READ_API_KEY
 	 */
 	/**
 	 * Static Assets

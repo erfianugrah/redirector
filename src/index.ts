@@ -4,6 +4,7 @@ import { RedirectSchema, BulkRedirectsSchema, Redirect } from './schemas/redirec
 import { RedirectService } from './services/redirectService';
 import { FormatService } from './services/formatService';
 import { logger } from './utils/logger';
+import { createAuthMiddleware } from './utils/auth';
 import { z } from 'zod';
 import { FileUploadSchema, FileDownloadSchema, FileFormat } from './schemas/file-formats';
 import { getAdminHtml } from './utils/admin-ui';
@@ -14,6 +15,8 @@ import { getAdminHtml } from './utils/admin-ui';
 type Env = {
   REDIRECTS_KV: Cloudflare.KVNamespace;
   LOG_LEVEL?: string;
+  ADMIN_API_KEY?: string;
+  READ_API_KEY?: string;
 };
 
 // Create the Hono app with typed environment
@@ -46,10 +49,15 @@ app.use('*', async (c, next) => {
   logger.info({ responseTime }, 'Request completed');
 });
 
-// Health check endpoint
+// Health check endpoint (public - no authentication)
 app.get('/health', (c) => {
   return c.json({ status: 'ok' });
 });
+
+// Apply authentication middleware to admin and API routes
+// Admin UI requires authentication
+app.use('/admin', createAuthMiddleware());
+app.use('/api/*', createAuthMiddleware());
 
 // Admin UI
 app.get('/admin', async (c) => {
