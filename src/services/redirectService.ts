@@ -244,8 +244,37 @@ export class RedirectService {
       params
     }, 'Processed redirect');
 
-    // Create the response with appropriate status code
-    return Response.redirect(destUrl.toString(), redirect.statusCode);
+    // Create the response with appropriate status code and cache headers
+    const response = Response.redirect(destUrl.toString(), redirect.statusCode);
+
+    // Add cache headers based on redirect type
+    const cacheTTL = this.getCacheTTLForStatusCode(redirect.statusCode);
+    const headers = new Headers(response.headers);
+    headers.set('Cache-Control', `public, max-age=${cacheTTL}`);
+    headers.set('CDN-Cache-Control', `public, max-age=${cacheTTL}`);
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  /**
+   * Determines cache TTL based on HTTP status code
+   */
+  private getCacheTTLForStatusCode(statusCode: number): number {
+    switch (statusCode) {
+      case 301: // Permanent redirect
+      case 308: // Permanent redirect (preserve method)
+        return 31536000; // 1 year
+      case 302: // Temporary redirect
+      case 303: // See Other
+      case 307: // Temporary redirect (preserve method)
+        return 3600; // 1 hour
+      default:
+        return 3600; // Default to 1 hour
+    }
   }
 
   /**
